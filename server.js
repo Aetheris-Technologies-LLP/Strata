@@ -40,6 +40,20 @@ function requireAuth(req, res, next) {
 }
 
 // ═══════════════════════════════════════
+// REQUEST LOGGER
+// ═══════════════════════════════════════
+const logFile = process.env.STRATA_LOG || '/home/tristenadmin/Strata/requests.log';
+
+function logRequest(entry) {
+  const line = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    ...entry
+  });
+  console.log(`📊 ${entry.status === 'success' ? '✅' : '❌'} [${entry.tenant}] ${entry.user} → ${entry.model} | ${entry.promptLen} chars | ${entry.responseLen} chars | ${entry.duration}ms`);
+  fs.appendFile(logFile, line + '\n', err => { if (err) console.error('Log write failed:', err.message); });
+}
+
+// ═══════════════════════════════════════
 // MODEL REGISTRY
 // ═══════════════════════════════════════
 const registry = {};
@@ -135,6 +149,7 @@ app.post('/api/generate', requireAuth, async (req, res) => {
     return res.status(404).json({ error: `Model not found: ${model}` });
   }
 
+  const startTime = Date.now();
   console.log(`🌊 Strata — model: ${model}, tenant: ${tenantId}, user: ${req.user?.userId || 'anon'}, prompt: ${prompt?.length} chars`);
 
   try {
@@ -158,10 +173,30 @@ app.post('/api/generate', requireAuth, async (req, res) => {
       return await response.json();
     });
 
-    console.log(`✅ Strata response: ${result.response?.length || 0} chars`);
+    const duration = Date.now() - startTime;
+    logRequest({
+      status: 'success',
+      tenant: tenantId,
+      user: req.user?.userId || req.ip,
+      model,
+      promptLen: prompt?.length || 0,
+      responseLen: result.response?.length || 0,
+      duration
+    });
     res.json(result);
 
   } catch (err) {
+    const duration = Date.now() - startTime;
+    logRequest({
+      status: 'error',
+      tenant: tenantId,
+      user: req.user?.userId || req.ip,
+      model,
+      promptLen: prompt?.length || 0,
+      responseLen: 0,
+      duration,
+      error: err.message
+    });
     console.error(`❌ Strata failed:`, err.message);
     res.status(500).json({ error: err.message });
   }

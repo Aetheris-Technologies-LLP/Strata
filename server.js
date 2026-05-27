@@ -205,7 +205,7 @@ app.post('/api/generate', requireAuth, async (req, res) => {
 // ═══════════════════════════════════════
 // MODEL MANAGEMENT
 // ═══════════════════════════════════════
-app.get('/api/tags', requireAuth, (req, res) => {
+app.get('/api/tags', (req, res) => {
   res.json({ models: Object.values(registry).map(m => ({ name: m.name, model: m.name })) });
 });
 

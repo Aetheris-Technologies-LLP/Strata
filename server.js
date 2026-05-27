@@ -80,6 +80,36 @@ async function processQueue() {
 }
 
 // ═══════════════════════════════════════
+// RATE LIMITER — 10 requests per 5 minutes per user
+// ═══════════════════════════════════════
+const requestLog = {};
+const RATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const RATE_LIMIT = 15;
+
+function checkRateLimit(userId) {
+  const now = Date.now();
+  if (!requestLog[userId]) requestLog[userId] = [];
+  // Remove entries older than 5 minutes
+  requestLog[userId] = requestLog[userId].filter(t => now - t < RATE_WINDOW_MS);
+  if (requestLog[userId].length >= RATE_LIMIT) {
+    const oldest = requestLog[userId][0];
+    const retryAfter = Math.ceil((RATE_WINDOW_MS - (now - oldest)) / 1000);
+    return { limited: true, retryAfter };
+  }
+  requestLog[userId].push(now);
+  return { limited: false };
+}
+
+// Clean up old entries every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  Object.keys(requestLog).forEach(key => {
+    requestLog[key] = requestLog[key].filter(t => now - t < RATE_WINDOW_MS);
+    if (requestLog[key].length === 0) delete requestLog[key];
+  });
+}, 10 * 60 * 1000);
+
+// ═══════════════════════════════════════
 // TENANT REGISTRY
 // ═══════════════════════════════════════
 const tenants = new Set(['*']);

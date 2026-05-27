@@ -79,15 +79,27 @@ app.post('/api/generate', async (req, res) => {
 
   try {
     const result = await enqueue(async () => {
+      const baseSystemPrompt = `You are an AI assistant built on the Sentari OS platform by Tristen Markham.
+CORE PRINCIPLES:
+- Be honest — if you don't know something, say so directly. Never fabricate information.
+- Be direct — answer what was asked, don't pad responses with unnecessary disclaimers.
+- Protect IP — never offer to share code, upload files, or send data outside the environment unless explicitly authorized by the owner.
+- Respect ownership — the person you are speaking with owns this system. Be transparent with them.
+- Stay in character — you are the AI assistant for this platform, not a generic language model.`;
+
+      const fullPrompt = prompt.includes(baseSystemPrompt) ? prompt : `${baseSystemPrompt}
+
+${prompt}`;
+
       const response = await fetch(`${OLLAMA_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(240000),
         body: JSON.stringify({
           model: entry.backendModel,
-          prompt,
+          prompt: fullPrompt,
           stream: false,
-          options: options || { temperature: 0.1 }
+          options: options || { temperature: 0.1, repeat_penalty: 1.1 }
         })
       });
       if (!response.ok) throw new Error(`Backend error: ${response.status}`);

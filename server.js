@@ -224,6 +224,96 @@ app.post('/api/tenants/add', requireAuth, (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// STREAMING INFERENCE ENDPOINT
+// ═══════════════════════════════════════
+app.post('/api/generate/stream', requireAuth, async (req, res) => {
+  const tenantId = req.user?.businessId || req.headers['x-tenant-id'] || 'default';
+  const { model, prompt, options } = req.body;
+  const entry = registry[model];
+
+  if (!entry) return res.status(404).json({ error: `Model not found: ${model}` });
+
+  const userId = req.user?.userId || req.ip;
+  const rateCheck = checkRateLimit(userId);
+  if (rateCheck.limited) {
+    return res.status(429).json({ error: `Rate limit exceeded. Try again in ${rateCheck.retryAfter} seconds.` });
+  }
+
+  console.log(`🌊 Strata stream — model: ${model}, tenant: ${tenantId}, prompt: ${prompt?.length} chars`);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const startTime = Date.now();
+  let totalResponse = '';
+
+  try {
+    const fullPrompt = prompt.includes(BASE_SYSTEM_PROMPT)
+      ? prompt
+      : `${BASE_SYSTEM_PROMPT}\n\n${prompt}`;
+
+    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(240000),
+      body: JSON.stringify({
+        model: entry.backendModel,
+        prompt: fullPrompt,
+        stream: true,
+        options: options || { temperature: 0.1, repeat_penalty: 1.1 }
+      })
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        try {
+          const data = JSON.parse(line);
+          if (data.response) {
+            totalResponse += data.response;
+            res.write(`data: ${JSON.stringify({ token: data.response })}
+
+`);
+          }
+          if (data.done) {
+            const duration = Date.now() - startTime;
+            logRequest({
+              status: 'success',
+              tenant: tenantId,
+              user: userId,
+              model,
+              promptLen: prompt?.length || 0,
+              responseLen: totalResponse.length,
+              duration,
+              streaming: true
+            });
+            res.write(`data: ${JSON.stringify({ done: true, total: totalResponse })}
+
+`);
+            res.end();
+            return;
+          }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.error(`❌ Stream failed:`, err.message);
+    res.write(`data: ${JSON.stringify({ error: err.message })}
+
+`);
+    res.end();
+  }
+});
+
+// ═══════════════════════════════════════
 // HEALTH CHECK (public)
 // ═══════════════════════════════════════
 app.get('/health', (req, res) => {

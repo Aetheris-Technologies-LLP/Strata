@@ -760,7 +760,7 @@ function render() {
     '<div class="log-row '+(l.status==='success'?'ok':'err')+'">' +
     '<span class="'+(l.status==='success'?'status-ok':'status-err')+'">'+(l.status==='success'?'✅':'❌')+' '+l.status+'</span>' +
     '<span style="color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(l.user||'').slice(-8)+' → <strong>'+l.model+'</strong></span>' +
-    '<span>'+(l.api==='openai'?'🟢 OpenAI':'⚪ Native')+'</span>' +
+    '<span>'+(l.api==='openai'?'🟢 API Direct':'⚪ Native')+'</span>' +
     '<span>'+(l.responseLen ? Math.round(l.responseLen/1024*10)/10+'k' : '—')+'</span>' +
     '<span style="color:'+(l.duration>10000?'#f59e0b':'#94a3b8')+'">'+l.duration+'ms</span>' +
     '</div>'
@@ -813,7 +813,7 @@ app.listen(PORT, () => {
 🔗 Backend:    ${config.backend} → ${config.backendUrl}
 🔒 JWT Auth:   ${JWT_SECRET ? 'enabled' : 'disabled (dev mode)'}
 🤖 Prompt:     ${BASE_SYSTEM_PROMPT.slice(0, 60)}…
-🟢 OpenAI API: http://localhost:${PORT}/v1
+🟢 API Direct API: http://localhost:${PORT}/v1
 🖥️  Web UI:    http://localhost:${PORT}/ui
 `);
 });

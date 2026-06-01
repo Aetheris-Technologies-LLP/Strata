@@ -1,0 +1,33 @@
+# ═══════════════════════════════════════
+# Strata — docker-compose.yml
+# Usage: docker compose up -d
+# ═══════════════════════════════════════
+
+version: '3.8'
+
+services:
+  strata:
+    build: .
+    image: strata:latest
+    container_name: strata
+    restart: unless-stopped
+    ports:
+      - "11435:11435"
+    environment:
+      - NODE_ENV=production
+      - STRATA_PORT=11435
+      - STRATA_BACKEND=ollama
+      - STRATA_BACKEND_URL=http://host.docker.internal:11434
+      - STRATA_SYSTEM_PROMPT=You are an AI assistant running on the Strata platform.
+      - STRATA_LOG=/var/log/strata/requests.log
+      # Uncomment and set these:
+      # - JWT_ACCESS_SECRET=your-secret-here
+      # - OPENAI_API_KEY=your-key-here
+    volumes:
+      - ./strata.config.json:/app/strata.config.json:ro
+      - strata-logs:/var/log/strata
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # lets container reach host Ollama
+
+volumes:
+  strata-logs:

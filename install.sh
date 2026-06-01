@@ -138,14 +138,89 @@ PLISTEOF
   launchctl load "$PLIST"
   echo "✅ LaunchAgent installed (starts on login)"
 
+  # ── Optional: Cloudflare Tunnel ─────────────────────────────────────────────
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  read -p "🌐 Install Cloudflare Tunnel for public HTTPS access? (recommended) [y/N]: " CF_ANSWER
+  CF_URL=""
+  if [[ "$CF_ANSWER" =~ ^[Yy]$ ]]; then
+    echo "📦 Installing cloudflared..."
+    brew install cloudflared 2>/dev/null || {
+      curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz | tar xz
+      sudo mv cloudflared /usr/local/bin/
+    }
+    # Run as background LaunchAgent
+    TUNNEL_PLIST="$HOME/Library/LaunchAgents/com.strata.tunnel.plist"
+    cat > "$TUNNEL_PLIST" << TEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.strata.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>--url</string>
+    <string>http://localhost:${STRATA_PORT}</string>
+    <string>--no-autoupdate</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${LOG_DIR}/tunnel.log</string>
+  <key>StandardErrorPath</key><string>${LOG_DIR}/tunnel.log</string>
+</dict>
+</plist>
+TEOF
+    launchctl load "$TUNNEL_PLIST"
+    echo "✅ Cloudflare Tunnel installed"
+    sleep 3
+    TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' ${LOG_DIR}/tunnel.log 2>/dev/null | tail -1)
+    if [ -n "$TUNNEL_URL" ]; then
+      echo "   ✅ Public URL: ${TUNNEL_URL}/ui"
+      CF_URL="${TUNNEL_URL}"
+    else
+      echo "   ⏳ Tunnel starting — check: tail -f ${LOG_DIR}/tunnel.log"
+      CF_URL="(check tunnel.log for URL)"
+    fi
+  fi
+
   sleep 2
   if curl -s http://localhost:${STRATA_PORT}/health | grep -q "online"; then
+    LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "YOUR_IP")
+    PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "YOUR_PUBLIC_IP")
+    TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "")
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🌊 Strata v${STRATA_VERSION} installed!"
     echo ""
     echo "   Config: ${INSTALL_DIR}/strata.config.json"
     echo "   Logs:   ${LOG_DIR}/strata.log"
+    echo ""
+    echo "   ── Access your Strata dashboard ──"
+    echo ""
+    echo "   Local network:"
+    echo "   http://${LOCAL_IP}:${STRATA_PORT}/ui"
+    echo ""
+    echo "   To access from anywhere (pick one):"
+    echo "   • Port forward ${STRATA_PORT} on your router:"
+    echo "     http://${PUBLIC_IP}:${STRATA_PORT}/ui"
+    if [ -n "$CF_URL" ]; then
+    echo "   • Cloudflare Tunnel (active):"
+    echo "     ${CF_URL}/ui"
+    else
+    echo "   • Cloudflare Tunnel (free, recommended):"
+    echo "     cloudflared tunnel --url http://localhost:${STRATA_PORT}"
+    fi
+    echo "   • Quick test with ngrok:"
+    echo "     npx ngrok http ${STRATA_PORT}"
+    if [ -n "$TAILSCALE_IP" ]; then
+    echo "   • Tailscale:"
+    echo "     http://${TAILSCALE_IP}:${STRATA_PORT}/ui"
+    fi
+    echo ""
+    echo "   ── OpenAI-compatible API ──"
+    echo "   http://${LOCAL_IP}:${STRATA_PORT}/v1"
     echo ""
     echo "   Run: strata status"
     echo "   Run: strata pull llama3"
@@ -276,15 +351,92 @@ chmod +x "$INSTALL_DIR/cli.js"
 ln -sf "$INSTALL_DIR/cli.js" /usr/local/bin/strata
 echo "✅ CLI installed: strata"
 
+# ── Optional: Cloudflare Tunnel ───────────────────────────────────────────────
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+read -p "🌐 Install Cloudflare Tunnel for public HTTPS access? (recommended) [y/N]: " CF_ANSWER
+if [[ "$CF_ANSWER" =~ ^[Yy]$ ]]; then
+  echo "📦 Installing cloudflared..."
+  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    -o /usr/local/bin/cloudflared
+  chmod +x /usr/local/bin/cloudflared
+
+  # Create systemd service for cloudflared
+  cat > /etc/systemd/system/strata-tunnel.service << CFEOF
+[Unit]
+Description=Strata Cloudflare Tunnel
+After=network.target strata.service
+Requires=strata.service
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://localhost:${STRATA_PORT} --no-autoupdate
+Restart=always
+RestartSec=10
+StandardOutput=append:${LOG_DIR}/tunnel.log
+StandardError=append:${LOG_DIR}/tunnel.log
+
+[Install]
+WantedBy=multi-user.target
+CFEOF
+
+  systemctl daemon-reload
+  systemctl enable strata-tunnel
+  systemctl start strata-tunnel
+  echo "✅ Cloudflare Tunnel installed and started"
+  echo "   Your public URL will appear in: tail -f ${LOG_DIR}/tunnel.log"
+  sleep 3
+  TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' ${LOG_DIR}/tunnel.log 2>/dev/null | tail -1)
+  if [ -n "$TUNNEL_URL" ]; then
+    echo "   ✅ Public URL: ${TUNNEL_URL}/ui"
+    CF_URL="${TUNNEL_URL}"
+  else
+    echo "   ⏳ Tunnel starting — check URL with: tail -f ${LOG_DIR}/tunnel.log"
+    CF_URL="(check tunnel.log for URL)"
+  fi
+else
+  echo "   Skipping Cloudflare Tunnel."
+  CF_URL=""
+fi
+
 sleep 3
 
 if curl -s http://localhost:${STRATA_PORT}/health | grep -q "online"; then
+  LOCAL_IP=$(hostname -I | awk '{print $1}')
+  PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "YOUR_PUBLIC_IP")
+  TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "")
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "🌊 Strata v${STRATA_VERSION} installed!"
   echo ""
   echo "   Config: ${INSTALL_DIR}/strata.config.json"
   echo "   Logs:   ${LOG_DIR}/strata.log"
+  echo ""
+  echo "   ── Access your Strata dashboard ──"
+  echo ""
+  echo "   Local network:"
+  echo "   http://${LOCAL_IP}:${STRATA_PORT}/ui"
+  echo ""
+  echo "   To access from anywhere (pick one):"
+  echo "   • Port forward ${STRATA_PORT} on your router:"
+  echo "     http://${PUBLIC_IP}:${STRATA_PORT}/ui"
+  if [ -n "$CF_URL" ]; then
+  echo "   • Cloudflare Tunnel (active):"
+  echo "     ${CF_URL}/ui"
+  else
+  echo "   • Cloudflare Tunnel (free, recommended):"
+  echo "     cloudflared tunnel --url http://localhost:${STRATA_PORT}"
+  fi
+  echo "   • Quick test with ngrok:"
+  echo "     npx ngrok http ${STRATA_PORT}"
+  if [ -n "$TAILSCALE_IP" ]; then
+  echo "   • Tailscale:"
+  echo "     http://${TAILSCALE_IP}:${STRATA_PORT}/ui"
+  fi
+  echo ""
+  echo "   ── OpenAI-compatible API ──"
+  echo "   http://${LOCAL_IP}:${STRATA_PORT}/v1"
   echo ""
   echo "   Run: strata status"
   echo "   Run: strata pull llama3"

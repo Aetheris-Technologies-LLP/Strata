@@ -488,6 +488,218 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ═══════════════════════════════════════
+// STRATA WEB UI — served at /ui
+// ═══════════════════════════════════════
+const uiAlerts = [];
+
+app.get('/ui', (req, res) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Strata Gateway</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .header { background: rgba(30,41,59,0.9); border-bottom: 1px solid rgba(59,130,246,0.2); padding: 16px 32px; display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 20px; font-weight: 700; color: #3b82f6; display: flex; align-items: center; gap: 10px; }
+  .badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.online { background: rgba(34,197,94,0.15); color: #22c55e; }
+  .badge.offline { background: rgba(239,68,68,0.15); color: #ef4444; }
+  .version { color: #475569; font-size: 13px; }
+  .main { padding: 32px; max-width: 1200px; margin: 0 auto; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 24px; }
+  .tab { padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; background: transparent; color: #64748b; }
+  .tab.active { background: rgba(59,130,246,0.2); color: #3b82f6; }
+  .tab:hover:not(.active) { background: rgba(255,255,255,0.05); color: #94a3b8; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .card { background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,246,0.15); border-radius: 12px; padding: 20px; }
+  .card-label { font-size: 12px; color: #64748b; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .card-value { font-size: 30px; font-weight: 700; color: #3b82f6; }
+  .card-sub { font-size: 12px; color: #475569; margin-top: 4px; }
+  .section { background: rgba(30,41,59,0.8); border: 1px solid rgba(59,130,246,0.15); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+  .section-title { font-size: 15px; font-weight: 600; color: #e2e8f0; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(59,130,246,0.1); }
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(59,130,246,0.06); font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .row-label { color: #64748b; }
+  .row-value { color: #94a3b8; }
+  .pill { background: rgba(59,130,246,0.15); color: #3b82f6; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+  .log-header { display: grid; grid-template-columns: 70px 1fr 100px 80px 80px; gap: 12px; padding: 6px 12px; font-size: 11px; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .log-row { display: grid; grid-template-columns: 70px 1fr 100px 80px 80px; gap: 12px; padding: 9px 12px; border-radius: 6px; margin-bottom: 3px; font-size: 13px; color: #94a3b8; align-items: center; }
+  .log-row.ok { background: rgba(34,197,94,0.05); }
+  .log-row.err { background: rgba(239,68,68,0.05); }
+  .status-ok { color: #22c55e; }
+  .status-err { color: #ef4444; }
+  .model-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid rgba(59,130,246,0.06); }
+  .model-row:last-child { border-bottom: none; }
+  .model-name { color: #e2e8f0; font-weight: 500; font-size: 15px; }
+  .alert-row { padding: 12px 16px; border-radius: 8px; margin-bottom: 8px; background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); font-size: 13px; color: #fbbf24; }
+  .alert-time { float: right; color: #64748b; font-size: 12px; }
+  .empty { color: #475569; padding: 24px 0; text-align: center; }
+  .refresh-btn { background: rgba(59,130,246,0.15); border: 1px solid rgba(59,130,246,0.3); border-radius: 8px; color: #3b82f6; padding: 8px 16px; cursor: pointer; font-size: 13px; }
+  .refresh-btn:hover { background: rgba(59,130,246,0.25); }
+  .last-updated { text-align: right; font-size: 12px; color: #475569; margin-top: 8px; }
+  .alert-count { background: rgba(239,68,68,0.3); color: #ef4444; border-radius: 999px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+  #loading { text-align: center; padding: 60px; color: #475569; font-size: 16px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">
+    🌊 Strata
+    <span class="badge offline" id="status-badge">Connecting...</span>
+    <span class="version" id="version-badge"></span>
+  </div>
+  <button class="refresh-btn" onclick="fetchAll()">↻ Refresh</button>
+</div>
+<div class="main">
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('overview', this)">Overview</button>
+    <button class="tab" onclick="switchTab('models', this)">Models</button>
+    <button class="tab" onclick="switchTab('logs', this)">Logs</button>
+    <button class="tab" onclick="switchTab('alerts', this)">Alerts <span id="alert-count"></span></button>
+  </div>
+  <div id="loading">Loading Strata data...</div>
+  <div id="tab-overview" style="display:none">
+    <div class="grid">
+      <div class="card"><div class="card-label">Total Requests</div><div class="card-value" id="stat-total">—</div><div class="card-sub">Last 100 logged</div></div>
+      <div class="card"><div class="card-label">Success Rate</div><div class="card-value" id="stat-success">—</div><div class="card-sub" id="stat-success-sub"></div></div>
+      <div class="card"><div class="card-label">Avg Response</div><div class="card-value" id="stat-avg">—</div><div class="card-sub">Across all requests</div></div>
+      <div class="card"><div class="card-label">Queue</div><div class="card-value" id="stat-queue">—</div><div class="card-sub" id="stat-queue-sub"></div></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Gateway Status</div>
+      <div class="row"><span class="row-label">Backend</span><span id="info-backend" class="pill">—</span></div>
+      <div class="row"><span class="row-label">Backend URL</span><span class="row-value" id="info-url">—</span></div>
+      <div class="row"><span class="row-label">Auth</span><span class="row-value" id="info-auth">—</span></div>
+      <div class="row"><span class="row-label">System Prompt</span><span class="row-value" id="info-prompt" style="max-width:500px;text-align:right;font-size:12px">—</span></div>
+    </div>
+    <div class="last-updated" id="last-updated"></div>
+  </div>
+  <div id="tab-models" style="display:none">
+    <div class="section">
+      <div class="section-title">Registered Models</div>
+      <div id="models-list"><div class="empty">No models registered.</div></div>
+    </div>
+  </div>
+  <div id="tab-logs" style="display:none">
+    <div class="section">
+      <div class="section-title">Request Logs <span id="log-count" style="font-size:13px;color:#64748b;font-weight:400"></span></div>
+      <div class="log-header"><span>Status</span><span>User → Model</span><span>API</span><span>Size</span><span>Time</span></div>
+      <div id="logs-list"><div class="empty">No logs yet.</div></div>
+    </div>
+  </div>
+  <div id="tab-alerts" style="display:none">
+    <div class="section">
+      <div class="section-title">Strata Alerts <span id="alerts-count-label" style="font-size:13px;color:#64748b;font-weight:400"></span></div>
+      <div id="alerts-list"><div class="empty">No alerts yet.</div></div>
+    </div>
+  </div>
+</div>
+<script>
+let state = { status: null, logs: [], alerts: [] };
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  ['overview','models','logs','alerts'].forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
+  });
+}
+async function fetchAll() {
+  try {
+    const [s, l, a] = await Promise.all([
+      fetch('/health').then(r => r.json()),
+      fetch('/api/logs?n=100').then(r => r.json()),
+      fetch('/api/alerts').then(r => r.json()),
+    ]);
+    state.status = s; state.logs = l.logs || []; state.alerts = a.alerts || [];
+    render();
+  } catch(e) {
+    document.getElementById('status-badge').textContent = 'Offline';
+    document.getElementById('status-badge').className = 'badge offline';
+  }
+}
+function render() {
+  const { status, logs, alerts } = state;
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('tab-overview').style.display = 'block';
+  const online = status?.status === 'online';
+  const badge = document.getElementById('status-badge');
+  badge.textContent = online ? 'Online' : 'Offline';
+  badge.className = 'badge ' + (online ? 'online' : 'offline');
+  document.getElementById('version-badge').textContent = status?.version ? 'v' + status.version : '';
+  const ok = logs.filter(l => l.status === 'success');
+  const err = logs.filter(l => l.status === 'error');
+  const avg = logs.length ? Math.round(logs.reduce((a,l) => a+(l.duration||0),0)/logs.length) : 0;
+  document.getElementById('stat-total').textContent = logs.length;
+  document.getElementById('stat-success').textContent = logs.length ? Math.round(ok.length/logs.length*100)+'%' : '—';
+  document.getElementById('stat-success-sub').textContent = ok.length + ' ok / ' + err.length + ' errors';
+  document.getElementById('stat-avg').textContent = avg ? avg+'ms' : '—';
+  document.getElementById('stat-queue').textContent = status?.queue?.pending ?? '—';
+  document.getElementById('stat-queue-sub').textContent = status?.queue?.running ? 'Running' : 'Idle';
+  document.getElementById('info-backend').textContent = status?.backend || '—';
+  document.getElementById('info-url').textContent = status?.backendUrl || '—';
+  document.getElementById('info-auth').textContent = status?.authenticated ? 'JWT Enabled' : 'Open';
+  document.getElementById('info-prompt').textContent = status?.systemPrompt || '—';
+  document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  const models = status?.models || [];
+  document.getElementById('models-list').innerHTML = models.length
+    ? models.map(m => '<div class="model-row"><span class="model-name">'+m+'</span><span class="pill">active</span></div>').join('')
+    : '<div class="empty">No models registered.</div>';
+  document.getElementById('log-count').textContent = '(' + logs.length + ' entries)';
+  document.getElementById('logs-list').innerHTML = logs.slice(0,50).map(l =>
+    '<div class="log-row '+(l.status==='success'?'ok':'err')+'">' +
+    '<span class="'+(l.status==='success'?'status-ok':'status-err')+'">'+(l.status==='success'?'✅':'❌')+' '+l.status+'</span>' +
+    '<span style="color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(l.user||'').slice(-8)+' → <strong>'+l.model+'</strong></span>' +
+    '<span>'+(l.api==='openai'?'🟢 OpenAI':'⚪ Native')+'</span>' +
+    '<span>'+(l.responseLen ? Math.round(l.responseLen/1024*10)/10+'k' : '—')+'</span>' +
+    '<span style="color:'+(l.duration>10000?'#f59e0b':'#94a3b8')+'">'+l.duration+'ms</span>' +
+    '</div>'
+  ).join('') || '<div class="empty">No request logs yet.</div>';
+  const ac = document.getElementById('alert-count');
+  ac.textContent = alerts.length > 0 ? alerts.length : '';
+  ac.className = alerts.length > 0 ? 'alert-count' : '';
+  document.getElementById('alerts-count-label').textContent = '(' + alerts.length + ' received)';
+  document.getElementById('alerts-list').innerHTML = alerts.map(a =>
+    '<div class="alert-row">' +
+    '<span class="alert-time">'+new Date(a.receivedAt).toLocaleTimeString()+'</span>' +
+    '<strong>'+a.event+'</strong>' +
+    (a.userId ? '<span style="margin-left:12px;color:#94a3b8">User: '+a.userId+'</span>' : '') +
+    (a.model  ? '<span style="margin-left:12px;color:#94a3b8">Model: '+a.model+'</span>' : '') +
+    (a.error  ? '<span style="margin-left:12px;color:#ef4444">'+a.error+'</span>' : '') +
+    '</div>'
+  ).join('') || '<div class="empty">No alerts yet.</div>';
+}
+fetchAll();
+setInterval(fetchAll, 30000);
+</script>
+</body>
+</html>`);
+});
+
+// Public endpoints for the UI (no auth — UI reads these directly)
+app.get('/api/logs', (req, res) => {
+  const n = parseInt(req.query.n) || 50;
+  try {
+    if (!fs.existsSync(config.logFile)) return res.json({ logs: [] });
+    const lines = fs.readFileSync(config.logFile, 'utf8').trim().split('\n').filter(Boolean);
+    const recent = lines.slice(-n).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).reverse();
+    res.json({ logs: recent });
+  } catch (e) { res.json({ logs: [] }); }
+});
+
+app.get('/api/alerts', (req, res) => res.json({ alerts: uiAlerts }));
+
+app.post('/api/ui/webhook', (req, res) => {
+  const alert = { ...req.body, receivedAt: new Date().toISOString() };
+  uiAlerts.unshift(alert);
+  if (uiAlerts.length > 100) uiAlerts.pop();
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
   console.log(`
 🌊 Strata v0.2.0 running on port ${PORT}
@@ -496,5 +708,6 @@ app.listen(PORT, () => {
 🔒 JWT Auth:   ${JWT_SECRET ? 'enabled' : 'disabled (dev mode)'}
 🤖 Prompt:     ${BASE_SYSTEM_PROMPT.slice(0, 60)}…
 🟢 OpenAI API: http://localhost:${PORT}/v1
+🖥️  Web UI:    http://localhost:${PORT}/ui
 `);
 });

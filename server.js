@@ -21,6 +21,7 @@ function loadConfig() {
     jwtSecret: null,
     logFile: '/home/tristenadmin/Strata/requests.log',
     webhookUrl: null,
+    gpuSsh: null,
   };
 
   let fileConfig = {};
@@ -43,6 +44,11 @@ function loadConfig() {
   if (process.env.JWT_ACCESS_SECRET)    envConfig.jwtSecret    = process.env.JWT_ACCESS_SECRET;
   if (process.env.STRATA_LOG)           envConfig.logFile      = process.env.STRATA_LOG;
   if (process.env.STRATA_WEBHOOK_URL)   envConfig.webhookUrl   = process.env.STRATA_WEBHOOK_URL;
+  if (process.env.GPU_SSH_HOST)         envConfig.gpuSsh       = {
+    host:    process.env.GPU_SSH_HOST,
+    user:    process.env.GPU_SSH_USER    || 'tristenadmin',
+    keyPath: process.env.GPU_SSH_KEY     || '~/.ssh/id_rsa',
+  };
 
   return { ...defaults, ...fileConfig, ...envConfig };
 }
@@ -104,6 +110,75 @@ async function fireWebhook(event, data) {
     console.warn(`⚠️  Webhook failed (${event}):`, err.message);
   }
 }
+
+// ═══════════════════════════════════════
+// GPU STATS — SSH-based, zero footprint on GPU VM
+// ═══════════════════════════════════════
+const { exec } = require('child_process');
+
+function queryGPUStats() {
+  return new Promise(resolve => {
+    const cmd = 'nvidia-smi --query-gpu=index,name,temperature.gpu,memory.used,memory.total,utilization.gpu,power.draw,power.limit --format=csv,noheader,nounits';
+
+    function parseGPUs(stdout, source) {
+      try {
+        const gpus = stdout.trim().split('\n').map(line => {
+          const [index, name, temp, memUsed, memTotal, util, powerDraw, powerLimit] = line.split(',').map(s => s.trim());
+          return {
+            index: parseInt(index), name,
+            temp: parseInt(temp),
+            memUsed: parseInt(memUsed), memTotal: parseInt(memTotal),
+            memPct: Math.round(parseInt(memUsed) / parseInt(memTotal) * 100),
+            util: parseInt(util),
+            powerDraw: parseFloat(powerDraw), powerLimit: parseFloat(powerLimit),
+          };
+        });
+        return { gpus, source };
+      } catch { return null; }
+    }
+
+    function sshCmd(host, user, keyPath) {
+      return `ssh -i ${keyPath || '~/.ssh/id_rsa'} -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes ${user}@${host} "${cmd}"`;
+    }
+
+    // Build list of hosts to query
+    const hosts = [];
+
+    // 1. Local machine always checked first
+    hosts.push({ type: 'local', cmd });
+
+    // 2. Auto-check backend host if it's remote
+    try {
+      const backendHost = new URL(config.backendUrl).hostname;
+      if (backendHost !== 'localhost' && backendHost !== '127.0.0.1') {
+        const sshUser = process.env.USER || 'tristenadmin';
+        hosts.push({ type: 'remote', cmd: sshCmd(backendHost, sshUser, '~/.ssh/id_rsa'), label: `backend (${backendHost})` });
+      }
+    } catch {}
+
+    // 3. Extra GPU hosts from config gpuSsh array
+    const gpuSshList = Array.isArray(config.gpuSsh)
+      ? config.gpuSsh
+      : (config.gpuSsh ? [config.gpuSsh] : []);
+
+    gpuSshList.forEach(g => {
+      if (g.host) hosts.push({ type: 'remote', cmd: sshCmd(g.host, g.user || 'tristenadmin', g.keyPath || '~/.ssh/id_rsa'), label: g.name || g.host });
+    });
+
+    // Query all hosts in parallel
+    Promise.all(hosts.map(h => new Promise(res => {
+      exec(h.cmd, { timeout: 8000 }, (err, stdout) => {
+        if (err || !stdout?.trim()) return res(null);
+        const result = parseGPUs(stdout, h.label || h.type);
+        res(result);
+      });
+    }))).then(results => {
+      const allGpus = results.filter(Boolean).flatMap(r => r.gpus.map(g => ({ ...g, source: r.source })));
+      resolve(allGpus.length ? { gpus: allGpus, source: 'mixed' } : null);
+    });
+  });
+}
+
 const registry = {};
 
 function registerModel(name, backendModel) {
@@ -475,7 +550,8 @@ app.post('/api/tenants/add', requireAuth, (req, res) => {
 // ═══════════════════════════════════════
 // HEALTH CHECK (public)
 // ═══════════════════════════════════════
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const gpu = await queryGPUStats();
   res.json({
     status: 'online',
     version: '0.2.0',
@@ -485,6 +561,7 @@ app.get('/health', (req, res) => {
     models: Object.keys(registry),
     authenticated: !!JWT_SECRET,
     systemPrompt: BASE_SYSTEM_PROMPT.slice(0, 80) + (BASE_SYSTEM_PROMPT.length > 80 ? '…' : ''),
+    gpu: gpu || null,
   });
 });
 
@@ -570,6 +647,12 @@ app.get('/ui', (req, res) => {
       <div class="card"><div class="card-label">Avg Response</div><div class="card-value" id="stat-avg">—</div><div class="card-sub">Across all requests</div></div>
       <div class="card"><div class="card-label">Queue</div><div class="card-value" id="stat-queue">—</div><div class="card-sub" id="stat-queue-sub"></div></div>
     </div>
+    <div id="gpu-section" style="display:none">
+      <div class="section">
+        <div class="section-title">🖥️ GPU Health <span id="gpu-source" style="font-size:12px;color:#64748b;font-weight:400;margin-left:8px"></span></div>
+        <div id="gpu-cards" class="grid"></div>
+      </div>
+    </div>
     <div class="section">
       <div class="section-title">Gateway Status</div>
       <div class="row"><span class="row-label">Backend</span><span id="info-backend" class="pill">—</span></div>
@@ -645,6 +728,29 @@ function render() {
   document.getElementById('info-auth').textContent = status?.authenticated ? 'JWT Enabled' : 'Open';
   document.getElementById('info-prompt').textContent = status?.systemPrompt || '—';
   document.getElementById('last-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+
+  // GPU section — only show if data available
+  const gpuSection = document.getElementById('gpu-section');
+  if (status?.gpu?.gpus?.length) {
+    gpuSection.style.display = 'block';
+    document.getElementById('gpu-source').textContent = status.gpu.source === 'remote' ? '(remote agent)' : '(local)';
+    document.getElementById('gpu-cards').innerHTML = status.gpu.gpus.map(g => {
+      const tempColor = g.temp > 85 ? '#ef4444' : g.temp > 70 ? '#f59e0b' : '#22c55e';
+      const memColor  = g.memPct > 90 ? '#ef4444' : g.memPct > 75 ? '#f59e0b' : '#3b82f6';
+      const utilColor = g.util > 90 ? '#ef4444' : g.util > 60 ? '#f59e0b' : '#22c55e';
+      return '<div class="card" style="min-width:220px">' +
+        '<div class="card-label" style="font-size:11px;margin-bottom:10px">GPU '+g.index+' — '+g.name+'</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;text-align:center">' +
+        '<div><div style="font-size:22px;font-weight:700;color:'+tempColor+'">'+g.temp+'°</div><div style="font-size:11px;color:#64748b">Temp</div></div>' +
+        '<div><div style="font-size:22px;font-weight:700;color:'+utilColor+'">'+g.util+'%</div><div style="font-size:11px;color:#64748b">GPU</div></div>' +
+        '<div><div style="font-size:22px;font-weight:700;color:'+memColor+'">'+g.memPct+'%</div><div style="font-size:11px;color:#64748b">VRAM</div></div>' +
+        '</div>' +
+        '<div style="margin-top:10px;font-size:11px;color:#475569;text-align:center">'+g.memUsed+' / '+g.memTotal+' MB' + (g.powerDraw ? ' · '+Math.round(g.powerDraw)+'W / '+Math.round(g.powerLimit)+'W' : '') + '</div>' +
+        '</div>';
+    }).join('');
+  } else {
+    gpuSection.style.display = 'none';
+  }
   const models = status?.models || [];
   document.getElementById('models-list').innerHTML = models.length
     ? models.map(m => '<div class="model-row"><span class="model-name">'+m+'</span><span class="pill">active</span></div>').join('')

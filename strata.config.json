@@ -5,5 +5,10 @@
   "defaultModel": "mixtral",
   "systemPrompt": "You are an AI assistant running on the Strata platform.",
   "logFile": "/home/tristenadmin/Strata/requests.log",
-  "webhookUrl": null
+  "webhookUrl": null,
+  "gpuSsh": {
+   "host": "10.0.0.238",
+   "user": "tristenadmin",
+   "keyPath": "/home/tristenadmin/.ssh/id_rsa"
+ }
 }

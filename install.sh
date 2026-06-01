@@ -295,16 +295,88 @@ echo "✅ Dependencies installed"
 # Generate JWT secret
 JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
 
+# ── Smart setup — ask questions, auto-detect ──────────────────────────────────
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "⚙️  Strata Setup"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Backend
+read -p "Backend type (ollama/llama.cpp/vllm/openai) [ollama]: " BACKEND_TYPE
+BACKEND_TYPE=${BACKEND_TYPE:-ollama}
+
+read -p "Backend URL [http://localhost:11434]: " BACKEND_URL
+BACKEND_URL=${BACKEND_URL:-http://localhost:11434}
+
+read -p "Default model [llama3]: " DEFAULT_MODEL
+DEFAULT_MODEL=${DEFAULT_MODEL:-llama3}
+
+read -p "System prompt [You are an AI assistant running on the Strata platform.]: " SYSTEM_PROMPT
+SYSTEM_PROMPT=${SYSTEM_PROMPT:-You are an AI assistant running on the Strata platform.}
+
+# GPU auto-detect
+echo ""
+echo "🔍 Detecting GPUs..."
+GPU_SSH_JSON="[]"
+
+# Check local GPU
+if command -v nvidia-smi &> /dev/null; then
+  LOCAL_GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+  if [ -n "$LOCAL_GPU" ]; then
+    echo "✅ Local GPU found: $LOCAL_GPU"
+    GPU_SSH_JSON="[]"  # local is auto-detected, no SSH needed
+  fi
+else
+  echo "   No local GPU detected"
+fi
+
+# Check backend host for GPU
+BACKEND_HOST=$(echo "$BACKEND_URL" | sed 's|http://||' | sed 's|https://||' | cut -d: -f1)
+if [ "$BACKEND_HOST" != "localhost" ] && [ "$BACKEND_HOST" != "127.0.0.1" ]; then
+  SSH_USER=$(whoami)
+  REMOTE_GPU=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes \
+    "$SSH_USER@$BACKEND_HOST" \
+    "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1" 2>/dev/null)
+  if [ -n "$REMOTE_GPU" ]; then
+    echo "✅ Remote GPU found on $BACKEND_HOST: $REMOTE_GPU"
+    GPU_SSH_JSON="[]"  # auto-detected via backend host, no extra config needed
+  fi
+fi
+
+# Ask about additional GPU machines
+read -p "Do you have GPUs on additional machines? [y/N]: " EXTRA_GPU
+GPU_EXTRA_JSON=""
+if [[ "$EXTRA_GPU" =~ ^[Yy]$ ]]; then
+  GPU_ENTRIES="["
+  FIRST=true
+  while true; do
+    read -p "   GPU machine IP: " GPU_HOST
+    read -p "   SSH username [$SSH_USER]: " GPU_USER
+    GPU_USER=${GPU_USER:-$SSH_USER}
+    if [ "$FIRST" = true ]; then
+      GPU_ENTRIES="${GPU_ENTRIES}{\"host\":\"${GPU_HOST}\",\"user\":\"${GPU_USER}\"}"
+      FIRST=false
+    else
+      GPU_ENTRIES="${GPU_ENTRIES},{\"host\":\"${GPU_HOST}\",\"user\":\"${GPU_USER}\"}"
+    fi
+    read -p "   Add another? [y/N]: " MORE_GPU
+    [[ "$MORE_GPU" =~ ^[Yy]$ ]] || break
+  done
+  GPU_SSH_JSON="${GPU_ENTRIES}]"
+fi
+
 # Write config
 if [ ! -f "$INSTALL_DIR/strata.config.json" ]; then
   cat > "$INSTALL_DIR/strata.config.json" << CFGEOF
 {
   "port": ${STRATA_PORT},
-  "backend": "ollama",
-  "backendUrl": "http://localhost:11434",
-  "defaultModel": "mixtral",
-  "systemPrompt": "You are a helpful AI assistant.",
-  "logFile": "${LOG_DIR}/requests.log"
+  "backend": "${BACKEND_TYPE}",
+  "backendUrl": "${BACKEND_URL}",
+  "defaultModel": "${DEFAULT_MODEL}",
+  "systemPrompt": "${SYSTEM_PROMPT}",
+  "logFile": "${LOG_DIR}/requests.log",
+  "webhookUrl": null,
+  "gpuSsh": ${GPU_SSH_JSON}
 }
 CFGEOF
   echo "✅ Created strata.config.json"
@@ -313,7 +385,6 @@ fi
 if [ ! -f "$INSTALL_DIR/.env" ]; then
   cat > "$INSTALL_DIR/.env" << ENVEOF
 STRATA_PORT=${STRATA_PORT}
-OLLAMA_URL=http://localhost:11434
 JWT_ACCESS_SECRET=${JWT_SECRET}
 STRATA_LOG=${LOG_DIR}/requests.log
 ENVEOF

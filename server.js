@@ -20,6 +20,7 @@ function loadConfig() {
     systemPrompt: 'You are a helpful AI assistant.',
     jwtSecret: null,
     logFile: '/home/tristenadmin/Strata/requests.log',
+    webhookUrl: null,
   };
 
   let fileConfig = {};
@@ -41,6 +42,7 @@ function loadConfig() {
   if (process.env.STRATA_SYSTEM_PROMPT) envConfig.systemPrompt = process.env.STRATA_SYSTEM_PROMPT;
   if (process.env.JWT_ACCESS_SECRET)    envConfig.jwtSecret    = process.env.JWT_ACCESS_SECRET;
   if (process.env.STRATA_LOG)           envConfig.logFile      = process.env.STRATA_LOG;
+  if (process.env.STRATA_WEBHOOK_URL)   envConfig.webhookUrl   = process.env.STRATA_WEBHOOK_URL;
 
   return { ...defaults, ...fileConfig, ...envConfig };
 }
@@ -81,8 +83,27 @@ function logRequest(entry) {
 }
 
 // ═══════════════════════════════════════
-// MODEL REGISTRY
+// WEBHOOK NOTIFICATIONS
+// Fires a POST to config.webhookUrl on key events
+// Set STRATA_WEBHOOK_URL in .env or strata.config.json
 // ═══════════════════════════════════════
+async function fireWebhook(event, data) {
+  if (!config.webhookUrl) return;
+  try {
+    await fetch(config.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(5000),
+      body: JSON.stringify({
+        event,
+        timestamp: new Date().toISOString(),
+        ...data,
+      }),
+    });
+  } catch (err) {
+    console.warn(`⚠️  Webhook failed (${event}):`, err.message);
+  }
+}
 const registry = {};
 
 function registerModel(name, backendModel) {
@@ -128,6 +149,7 @@ function checkRateLimit(userId) {
   requestLog[userId] = requestLog[userId].filter(t => now - t < RATE_WINDOW_MS);
   if (requestLog[userId].length >= RATE_LIMIT) {
     const retryAfter = Math.ceil((RATE_WINDOW_MS - (now - requestLog[userId][0])) / 1000);
+    fireWebhook('rate_limit_hit', { userId, retryAfter, requests: requestLog[userId].length });
     return { limited: true, retryAfter };
   }
   requestLog[userId].push(now);
@@ -282,6 +304,7 @@ app.post('/api/generate', requireAuth, async (req, res) => {
   } catch (err) {
     logRequest({ status: 'error', tenant: tenantId, user: req.user?.userId || req.ip, model, promptLen: prompt?.length || 0, responseLen: 0, duration: Date.now() - startTime, error: err.message });
     console.error(`❌ /api/generate failed:`, err.message);
+    fireWebhook('model_error', { model, error: err.message, tenant: tenantId });
     res.status(500).json({ error: err.message });
   }
 });
@@ -423,6 +446,7 @@ app.post('/v1/chat/completions', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('❌ OpenAI completions failed:', err.message);
     logRequest({ status: 'error', tenant: tenantId, user: userId, model, promptLen: JSON.stringify(messages).length, responseLen: 0, duration: Date.now() - startTime, error: err.message, api: 'openai' });
+    fireWebhook('model_error', { model, error: err.message, tenant: tenantId, api: 'openai' });
     res.status(502).json({ error: { message: err.message, type: 'backend_error', code: 502 } });
   }
 });

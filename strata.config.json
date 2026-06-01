@@ -4,5 +4,6 @@
   "backendUrl": "http://10.0.0.238:11434",
   "defaultModel": "mixtral",
   "systemPrompt": "You are an AI assistant running on the Strata platform.",
-  "logFile": "/home/tristenadmin/Strata/requests.log"
+  "logFile": "/home/tristenadmin/Strata/requests.log",
+  "webhookUrl": null
 }

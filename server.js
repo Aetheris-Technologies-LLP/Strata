@@ -141,28 +141,34 @@ function queryGPUStats() {
       return `ssh -i ${keyPath || '~/.ssh/id_rsa'} -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes ${user}@${host} "${cmd}"`;
     }
 
-    // Build list of hosts to query
+    // Build list of hosts to query — deduplicate by IP
     const hosts = [];
+    const seenHosts = new Set();
 
     // 1. Local machine always checked first
     hosts.push({ type: 'local', cmd });
+    seenHosts.add('local');
 
     // 2. Auto-check backend host if it's remote
     try {
       const backendHost = new URL(config.backendUrl).hostname;
-      if (backendHost !== 'localhost' && backendHost !== '127.0.0.1') {
+      if (backendHost !== 'localhost' && backendHost !== '127.0.0.1' && !seenHosts.has(backendHost)) {
+        seenHosts.add(backendHost);
         const sshUser = process.env.USER || 'tristenadmin';
         hosts.push({ type: 'remote', cmd: sshCmd(backendHost, sshUser, '~/.ssh/id_rsa'), label: `backend (${backendHost})` });
       }
     } catch {}
 
-    // 3. Extra GPU hosts from config gpuSsh array
+    // 3. Extra GPU hosts from config gpuSsh array — skip if already queried
     const gpuSshList = Array.isArray(config.gpuSsh)
       ? config.gpuSsh
       : (config.gpuSsh ? [config.gpuSsh] : []);
 
     gpuSshList.forEach(g => {
-      if (g.host) hosts.push({ type: 'remote', cmd: sshCmd(g.host, g.user || 'tristenadmin', g.keyPath || '~/.ssh/id_rsa'), label: g.name || g.host });
+      if (g.host && !seenHosts.has(g.host)) {
+        seenHosts.add(g.host);
+        hosts.push({ type: 'remote', cmd: sshCmd(g.host, g.user || 'tristenadmin', g.keyPath || '~/.ssh/id_rsa'), label: g.name || g.host });
+      }
     });
 
     // Query all hosts in parallel
@@ -273,28 +279,34 @@ async function routeToBackend(model, messages, stream = false) {
       };
     }
 
+    case 'strata.direct':
     case 'llama.cpp': {
+      // llama-server supports OpenAI-compatible /v1/chat/completions natively
+      const headers = { 'Content-Type': 'application/json' };
       if (stream) {
-        const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\n') + '\nassistant:';
-        const res = await fetch(`${backendUrl}/completion`, {
+        const res = await fetch(`${backendUrl}/v1/chat/completions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           signal: AbortSignal.timeout(240000),
-          body: JSON.stringify({ prompt, temperature: 0.7, stop: ['\nuser:'], stream: true }),
+          body: JSON.stringify({ model: backendModel, messages, stream: true }),
         });
-        if (!res.ok) throw new Error(`llama.cpp error ${res.status}`);
+        if (!res.ok) throw new Error(`strata.direct error ${res.status}`);
         return res;
       }
-      const prompt = messages.map(m => `${m.role}: ${m.content}`).join('\n') + '\nassistant:';
-      const res = await fetch(`${backendUrl}/completion`, {
+      const res = await fetch(`${backendUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         signal: AbortSignal.timeout(240000),
-        body: JSON.stringify({ prompt, temperature: 0.7, stop: ['\nuser:'] }),
+        body: JSON.stringify({ model: backendModel, messages, stream: false }),
       });
-      if (!res.ok) throw new Error(`llama.cpp error ${res.status}: ${await res.text()}`);
+      if (!res.ok) throw new Error(`strata.direct error ${res.status}: ${await res.text()}`);
       const data = await res.json();
-      return { content: data.content ?? '', model, promptTokens: data.tokens_evaluated ?? 0, completionTokens: data.tokens_predicted ?? 0 };
+      return {
+        content: data.choices?.[0]?.message?.content ?? '',
+        model,
+        promptTokens: data.usage?.prompt_tokens ?? 0,
+        completionTokens: data.usage?.completion_tokens ?? 0,
+      };
     }
 
     case 'vllm':
@@ -319,7 +331,7 @@ async function routeToBackend(model, messages, stream = false) {
     }
 
     default:
-      throw new Error(`Unknown backend: "${backend}". Valid: ollama, llama.cpp, vllm, openai`);
+      throw new Error(`Unknown backend: "${backend}". Valid: ollama, strata.direct, llama.cpp, vllm, openai`);
   }
 }
 
@@ -336,15 +348,11 @@ function extractStreamToken(line, backend) {
       const d = JSON.parse(line);
       return { token: d.message?.content || '', done: !!d.done };
     }
-    if (backend === 'llama.cpp') {
-      const d = JSON.parse(line);
-      return { token: d.content || '', done: !!d.stop };
-    }
-    // vllm / openai SSE
+    // strata.direct, llama.cpp, vllm, openai all use SSE OpenAI format
     const clean = line.replace(/^data: /, '').trim();
     if (clean === '[DONE]') return { token: '', done: true };
     const d = JSON.parse(clean);
-      return { token: d.choices?.[0]?.delta?.content || '', done: !!d.choices?.[0]?.finish_reason };
+    return { token: d.choices?.[0]?.delta?.content || '', done: !!d.choices?.[0]?.finish_reason };
   } catch { return null; }
 }
 
@@ -760,7 +768,7 @@ function render() {
     '<div class="log-row '+(l.status==='success'?'ok':'err')+'">' +
     '<span class="'+(l.status==='success'?'status-ok':'status-err')+'">'+(l.status==='success'?'✅':'❌')+' '+l.status+'</span>' +
     '<span style="color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(l.user||'').slice(-8)+' → <strong>'+l.model+'</strong></span>' +
-    '<span>'+(l.api==='openai'?'🟢 API Direct':'⚪ Native')+'</span>' +
+    '<span>'+(l.api==='openai'?'🟢 OpenAI':'⚪ Native')+'</span>' +
     '<span>'+(l.responseLen ? Math.round(l.responseLen/1024*10)/10+'k' : '—')+'</span>' +
     '<span style="color:'+(l.duration>10000?'#f59e0b':'#94a3b8')+'">'+l.duration+'ms</span>' +
     '</div>'
@@ -813,7 +821,7 @@ app.listen(PORT, () => {
 🔗 Backend:    ${config.backend} → ${config.backendUrl}
 🔒 JWT Auth:   ${JWT_SECRET ? 'enabled' : 'disabled (dev mode)'}
 🤖 Prompt:     ${BASE_SYSTEM_PROMPT.slice(0, 60)}…
-🟢 API Direct API: http://localhost:${PORT}/v1
+🟢 Direct API: http://localhost:${PORT}/v1
 🖥️  Web UI:    http://localhost:${PORT}/ui
 `);
 });

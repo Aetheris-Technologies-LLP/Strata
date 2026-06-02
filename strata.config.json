@@ -1,7 +1,7 @@
 {
   "port": 11435,
-  "backend": "ollama",
-  "backendUrl": "http://10.0.0.238:11434",
+  "backend": "strata.direct",
+  "backendUrl": "http://10.0.0.238:8080",
   "defaultModel": "mixtral",
   "systemPrompt": "You are an AI assistant running on the Strata platform.",
   "logFile": "/home/tristenadmin/Strata/requests.log",

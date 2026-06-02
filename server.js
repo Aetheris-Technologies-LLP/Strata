@@ -678,26 +678,121 @@ app.get('/ui', (req, res) => {
   </div>
   <div id="tab-logs" style="display:none">
     <div class="section">
-      <div class="section-title">Request Logs <span id="log-count" style="font-size:13px;color:#64748b;font-weight:400"></span></div>
+      <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Request Logs <span id="log-count" style="font-size:13px;color:#64748b;font-weight:400"></span></span>
+        <div style="display:flex;gap:8px">
+          <button class="log-filter active" onclick="setLogFilter('all', this)" style="padding:4px 10px;border-radius:6px;border:none;cursor:pointer;font-size:12px;background:rgba(59,130,246,0.2);color:#3b82f6">All</button>
+          <button class="log-filter" onclick="setLogFilter('success', this)" style="padding:4px 10px;border-radius:6px;border:none;cursor:pointer;font-size:12px;background:transparent;color:#64748b">✅ Success</button>
+          <button class="log-filter" onclick="setLogFilter('error', this)" style="padding:4px 10px;border-radius:6px;border:none;cursor:pointer;font-size:12px;background:transparent;color:#64748b">❌ Errors</button>
+        </div>
+      </div>
       <div class="log-header"><span>Status</span><span>User → Model</span><span>API</span><span>Size</span><span>Time</span></div>
       <div id="logs-list"><div class="empty">No logs yet.</div></div>
     </div>
   </div>
   <div id="tab-alerts" style="display:none">
     <div class="section">
-      <div class="section-title">Strata Alerts <span id="alerts-count-label" style="font-size:13px;color:#64748b;font-weight:400"></span></div>
+      <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Strata Alerts <span id="alerts-count-label" style="font-size:13px;color:#64748b;font-weight:400"></span></span>
+        <button onclick="clearAlerts()" style="padding:4px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);cursor:pointer;font-size:12px;background:rgba(239,68,68,0.1);color:#ef4444">Clear All</button>
+      </div>
       <div id="alerts-list"><div class="empty">No alerts yet.</div></div>
     </div>
   </div>
 </div>
 <script>
 let state = { status: null, logs: [], alerts: [] };
+let logFilter = 'all';
+
+function setLogFilter(filter, btn) {
+  logFilter = filter;
+  document.querySelectorAll('.log-filter').forEach(b => {
+    b.style.background = 'transparent';
+    b.style.color = '#64748b';
+  });
+  btn.style.background = 'rgba(59,130,246,0.2)';
+  btn.style.color = '#3b82f6';
+  renderLogs();
+}
+
+function clearAlerts() {
+  state.alerts = [];
+  fetch('/api/alerts/clear', { method: 'POST' });
+  renderAlerts();
+}
+
 function switchTab(name, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   ['overview','models','logs','alerts'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? 'block' : 'none';
   });
+}
+
+function formatUser(user) {
+  if (!user) return '—';
+  // Show meaningful name instead of truncated ID
+  if (user === 'aetheris-service') return 'aetheris';
+  if (user.length > 12) return user.slice(0, 8) + '…';
+  return user;
+}
+
+function parseAlertError(error) {
+  if (!error) return '';
+  try {
+    const match = error.match(/"message":"([^"]+)"/);
+    return match ? match[1] : error.slice(0, 80);
+  } catch { return error.slice(0, 80); }
+}
+
+function renderLogs() {
+  const { logs } = state;
+  const filtered = logFilter === 'all' ? logs : logs.filter(l => l.status === logFilter);
+  document.getElementById('log-count').textContent = '(' + filtered.length + ' entries)';
+  document.getElementById('logs-list').innerHTML = filtered.slice(0,50).map(l =>
+    '<div class="log-row '+(l.status==='success'?'ok':'err')+'">' +
+    '<span class="'+(l.status==='success'?'status-ok':'status-err')+'">'+(l.status==='success'?'✅':'❌')+' '+l.status+'</span>' +
+    '<span style="color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+formatUser(l.user)+' → <strong>'+l.model+'</strong></span>' +
+    '<span>'+(l.api==='openai'?'🟢 API Direct':'⚪ Native')+'</span>' +
+    '<span>'+(l.responseLen ? Math.round(l.responseLen/1024*10)/10+'k' : '—')+'</span>' +
+    '<span style="color:'+(l.duration>10000?'#f59e0b':'#94a3b8')+'">'+l.duration+'ms</span>' +
+    '</div>'
+  ).join('') || '<div class="empty">No logs match filter.</div>';
+}
+
+function renderAlerts() {
+  const { alerts } = state;
+  const ac = document.getElementById('alert-count');
+  ac.textContent = alerts.length > 0 ? alerts.length : '';
+  ac.className = alerts.length > 0 ? 'alert-count' : '';
+  document.getElementById('alerts-count-label').textContent = '(' + alerts.length + ' received)';
+
+  // Group by error message to avoid duplicates
+  const grouped = [];
+  const seen = new Map();
+  alerts.forEach(a => {
+    const key = a.event + (a.error || '');
+    if (seen.has(key)) {
+      seen.get(key).count++;
+    } else {
+      const entry = { ...a, count: 1 };
+      seen.set(key, entry);
+      grouped.push(entry);
+    }
+  });
+
+  document.getElementById('alerts-list').innerHTML = grouped.map(a => {
+    const errMsg = parseAlertError(a.error);
+    const severity = a.event === 'model_error' ? '#ef4444' : '#f59e0b';
+    return '<div style="padding:12px 16px;border-radius:8px;margin-bottom:8px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15)">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+      '<span style="font-weight:600;color:'+severity+';font-size:13px">'+a.event+(a.count>1?' <span style="background:rgba(239,68,68,0.2);padding:1px 6px;border-radius:999px;font-size:11px">×'+a.count+'</span>':'')+'</span>' +
+      '<span style="color:#64748b;font-size:12px">'+new Date(a.receivedAt).toLocaleTimeString()+'</span>' +
+      '</div>' +
+      (a.model ? '<div style="font-size:12px;color:#94a3b8;margin-bottom:2px">Model: <strong>'+a.model+'</strong></div>' : '') +
+      (errMsg ? '<div style="font-size:12px;color:#94a3b8;word-break:break-word">'+errMsg+'</div>' : '') +
+      '</div>';
+  }).join('') || '<div class="empty">No alerts yet. Alerts fire on rate limit hits or model errors.</div>';
 }
 async function fetchAll() {
   try {
@@ -763,29 +858,8 @@ function render() {
   document.getElementById('models-list').innerHTML = models.length
     ? models.map(m => '<div class="model-row"><span class="model-name">'+m+'</span><span class="pill">active</span></div>').join('')
     : '<div class="empty">No models registered.</div>';
-  document.getElementById('log-count').textContent = '(' + logs.length + ' entries)';
-  document.getElementById('logs-list').innerHTML = logs.slice(0,50).map(l =>
-    '<div class="log-row '+(l.status==='success'?'ok':'err')+'">' +
-    '<span class="'+(l.status==='success'?'status-ok':'status-err')+'">'+(l.status==='success'?'✅':'❌')+' '+l.status+'</span>' +
-    '<span style="color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(l.user||'').slice(-8)+' → <strong>'+l.model+'</strong></span>' +
-    '<span>'+(l.api==='openai'?'🟢 OpenAI':'⚪ Native')+'</span>' +
-    '<span>'+(l.responseLen ? Math.round(l.responseLen/1024*10)/10+'k' : '—')+'</span>' +
-    '<span style="color:'+(l.duration>10000?'#f59e0b':'#94a3b8')+'">'+l.duration+'ms</span>' +
-    '</div>'
-  ).join('') || '<div class="empty">No request logs yet.</div>';
-  const ac = document.getElementById('alert-count');
-  ac.textContent = alerts.length > 0 ? alerts.length : '';
-  ac.className = alerts.length > 0 ? 'alert-count' : '';
-  document.getElementById('alerts-count-label').textContent = '(' + alerts.length + ' received)';
-  document.getElementById('alerts-list').innerHTML = alerts.map(a =>
-    '<div class="alert-row">' +
-    '<span class="alert-time">'+new Date(a.receivedAt).toLocaleTimeString()+'</span>' +
-    '<strong>'+a.event+'</strong>' +
-    (a.userId ? '<span style="margin-left:12px;color:#94a3b8">User: '+a.userId+'</span>' : '') +
-    (a.model  ? '<span style="margin-left:12px;color:#94a3b8">Model: '+a.model+'</span>' : '') +
-    (a.error  ? '<span style="margin-left:12px;color:#ef4444">'+a.error+'</span>' : '') +
-    '</div>'
-  ).join('') || '<div class="empty">No alerts yet.</div>';
+  renderLogs();
+  renderAlerts();
 }
 fetchAll();
 setInterval(fetchAll, 30000);
@@ -807,6 +881,11 @@ app.get('/api/logs', (req, res) => {
 
 app.get('/api/alerts', (req, res) => res.json({ alerts: uiAlerts }));
 
+app.post('/api/alerts/clear', (req, res) => {
+  uiAlerts.length = 0;
+  res.json({ ok: true });
+});
+
 app.post('/api/ui/webhook', (req, res) => {
   const alert = { ...req.body, receivedAt: new Date().toISOString() };
   uiAlerts.unshift(alert);
@@ -821,7 +900,7 @@ app.listen(PORT, () => {
 🔗 Backend:    ${config.backend} → ${config.backendUrl}
 🔒 JWT Auth:   ${JWT_SECRET ? 'enabled' : 'disabled (dev mode)'}
 🤖 Prompt:     ${BASE_SYSTEM_PROMPT.slice(0, 60)}…
-🟢 Direct API: http://localhost:${PORT}/v1
+🟢 OpenAI API: http://localhost:${PORT}/v1
 🖥️  Web UI:    http://localhost:${PORT}/ui
 `);
 });

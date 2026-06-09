@@ -432,15 +432,61 @@ setup_llama_service() {
     return
   fi
 
-  # GPU layers
+  # ── VRAM Auto-Calculator ──────────────────────────────────────────────────
+  # Calculate optimal GPU layers based on model size and available VRAM
+  MODEL_SIZE_MB=$(du -m "$MODEL_PATH" | cut -f1)
+  info "Model size: ${MODEL_SIZE_MB}MB"
+
+  AUTO_GPU_LAYERS=99  # default = all layers (CPU-only or Apple Silicon)
+
   if [ "$GPU_TYPE" = "nvidia" ] && [ -n "$GPU_VRAM" ]; then
-    SUGGESTED_LAYERS=$(( GPU_VRAM / 1000 ))
-    read -p "GPU layers to load [${SUGGESTED_LAYERS}]: " GPU_LAYERS
-    GPU_LAYERS=${GPU_LAYERS:-$SUGGESTED_LAYERS}
+    # Get actual free VRAM (not just total)
+    FREE_VRAM=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "$GPU_VRAM")
+
+    # Use 90% of free VRAM to leave headroom for KV cache and overhead
+    USABLE_VRAM=$(( FREE_VRAM * 90 / 100 ))
+
+    if [ "$MODEL_SIZE_MB" -gt 0 ] && [ "$USABLE_VRAM" -gt 0 ]; then
+      if [ "$MODEL_SIZE_MB" -le "$USABLE_VRAM" ]; then
+        # Model fits entirely in VRAM
+        AUTO_GPU_LAYERS=99
+        ok "Model fits fully in VRAM — loading all layers to GPU"
+      else
+        # Partial GPU offload — calculate how many layers fit
+        # Mixtral has 32 layers, most 7B models have 32, 70B models have 80
+        # Estimate layers by probing the model or using size heuristics
+        if [ "$MODEL_SIZE_MB" -gt 20000 ]; then
+          TOTAL_LAYERS=32   # Mixtral 8x7B
+        elif [ "$MODEL_SIZE_MB" -gt 10000 ]; then
+          TOTAL_LAYERS=80   # 70B models
+        elif [ "$MODEL_SIZE_MB" -gt 5000 ]; then
+          TOTAL_LAYERS=40   # 13B models
+        else
+          TOTAL_LAYERS=32   # 7B models
+        fi
+        AUTO_GPU_LAYERS=$(( USABLE_VRAM * TOTAL_LAYERS / MODEL_SIZE_MB ))
+        # Cap at total layers
+        [ "$AUTO_GPU_LAYERS" -gt "$TOTAL_LAYERS" ] && AUTO_GPU_LAYERS=$TOTAL_LAYERS
+        warn "Model larger than VRAM — loading ${AUTO_GPU_LAYERS}/${TOTAL_LAYERS} layers to GPU, rest to CPU RAM"
+        info "VRAM: ${FREE_VRAM}MB free, usable: ${USABLE_VRAM}MB, model: ${MODEL_SIZE_MB}MB"
+      fi
+    fi
+
+  elif [ "$GPU_TYPE" = "amd" ]; then
+    AUTO_GPU_LAYERS=99
+    ok "AMD GPU — loading all layers"
+  elif [ "$GPU_TYPE" = "apple" ]; then
+    AUTO_GPU_LAYERS=99
+    ok "Apple Silicon — unified memory, loading all layers"
   else
-    read -p "GPU layers to load [99 = all]: " GPU_LAYERS
-    GPU_LAYERS=${GPU_LAYERS:-99}
+    AUTO_GPU_LAYERS=0
+    warn "CPU only — no GPU offload"
   fi
+
+  echo ""
+  read -p "GPU layers [${AUTO_GPU_LAYERS} — auto-calculated, press Enter to accept]: " GPU_LAYERS
+  GPU_LAYERS=${GPU_LAYERS:-$AUTO_GPU_LAYERS}
+  ok "GPU layers: $GPU_LAYERS"
 
   if [[ "$OS" == "linux" ]] && [ "$EUID" -eq 0 ]; then
     cat > /etc/systemd/system/llama-server.service << SVCEOF
@@ -492,6 +538,31 @@ SVCEOF
 PEOF
     launchctl load "$LLAMA_PLIST"
     ok "llama-server LaunchAgent installed"
+  fi
+
+  # ── Smoke Test ────────────────────────────────────────────────────────────
+  info "Waiting for llama-server to load model (this may take 30-60 seconds)..."
+  LLAMA_PORT_CHECK=${LLAMA_PORT:-8080}
+  SMOKE_PASSED=false
+  for i in $(seq 1 12); do
+    sleep 5
+    if curl -s "http://localhost:${LLAMA_PORT_CHECK}/health" | grep -q "ok"; then
+      # Fire a real inference test
+      SMOKE_RESPONSE=$(curl -s --max-time 30 -X POST "http://localhost:${LLAMA_PORT_CHECK}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d '{"model":"test","messages":[{"role":"user","content":"Reply with one word: ready"}],"max_tokens":5}' 2>/dev/null)
+      if echo "$SMOKE_RESPONSE" | grep -q "choices"; then
+        ok "Smoke test passed — llama-server is responding to inference requests"
+        SMOKE_PASSED=true
+        break
+      fi
+    fi
+    echo -n "."
+  done
+  echo ""
+  if [ "$SMOKE_PASSED" = false ]; then
+    warn "Smoke test timed out — model may still be loading"
+    warn "Check: tail -f ${LOG_DIR}/llama-server.log"
   fi
 }
 

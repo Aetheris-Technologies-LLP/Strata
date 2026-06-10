@@ -612,8 +612,8 @@ app.get('/ui', (req, res) => {
   .row-label { color: #64748b; }
   .row-value { color: #94a3b8; }
   .pill { background: rgba(59,130,246,0.15); color: #3b82f6; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
-  .log-header { display: grid; grid-template-columns: 70px 1fr 100px 80px 80px; gap: 12px; padding: 6px 12px; font-size: 11px; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
-  .log-row { display: grid; grid-template-columns: 70px 1fr 100px 80px 80px; gap: 12px; padding: 9px 12px; border-radius: 6px; margin-bottom: 3px; font-size: 13px; color: #94a3b8; align-items: center; }
+  .log-header { display: grid; grid-template-columns: 70px 1fr 100px 80px 70px 90px; gap: 12px; padding: 6px 12px; font-size: 11px; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .log-row { display: grid; grid-template-columns: 70px 1fr 100px 80px 70px 90px; gap: 12px; padding: 9px 12px; border-radius: 6px; margin-bottom: 3px; font-size: 13px; color: #94a3b8; align-items: center; }
   .log-row.ok { background: rgba(34,197,94,0.05); }
   .log-row.err { background: rgba(239,68,68,0.05); }
   .status-ok { color: #22c55e; }
@@ -686,7 +686,7 @@ app.get('/ui', (req, res) => {
           <button class="log-filter" onclick="setLogFilter('error', this)" style="padding:4px 10px;border-radius:6px;border:none;cursor:pointer;font-size:12px;background:transparent;color:#64748b">❌ Errors</button>
         </div>
       </div>
-      <div class="log-header"><span>Status</span><span>User → Model</span><span>API</span><span>Size</span><span>Time</span></div>
+      <div class="log-header"><span>Status</span><span>User → Model</span><span>API</span><span>Size</span><span>Time</span><span>When</span></div>
       <div id="logs-list"><div class="empty">No logs yet.</div></div>
     </div>
   </div>
@@ -756,6 +756,7 @@ function renderLogs() {
     '<span>'+(l.api==='openai'?'🟢 API Direct':'⚪ Native')+'</span>' +
     '<span>'+(l.responseLen ? Math.round(l.responseLen/1024*10)/10+'k' : '—')+'</span>' +
     '<span style="color:'+(l.duration>10000?'#f59e0b':'#94a3b8')+'">'+l.duration+'ms</span>' +
+    '<span style="color:#475569;font-size:11px">'+(l.timestamp ? new Date(l.timestamp).toLocaleTimeString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—')+'</span>' +
     '</div>'
   ).join('') || '<div class="empty">No logs match filter.</div>';
 }
